@@ -1,14 +1,13 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import '../viewmodels/purchase_viewmodel.dart';
 import '../viewmodels/statistics_viewmodel.dart';
 import '../viewmodels/goal_viewmodel.dart';
 import '../models/goal_model.dart';
 import '../models/pepper_type.dart';
+import '../services/backup_service.dart';
+import '../services/pdf_export_service.dart';
 
 class AdminView extends StatefulWidget {
   const AdminView({super.key});
@@ -22,11 +21,36 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
   final currencyFormat = NumberFormat.currency(symbol: '\$');
   final numberFormat = NumberFormat('#,##0.0#', 'es');
   final dateFormat = DateFormat('dd/MM/yyyy');
+  final BackupService _backupService = BackupService();
+  final PdfExportService _pdfService = PdfExportService();
+  
+  String _lastBackupDate = 'Cargando...';
+  List<Map<String, dynamic>> _availableBackups = [];
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _loadBackupInfo();
+  }
+
+  Future<void> _loadBackupInfo() async {
+    final date = await _backupService.getLastBackupDate();
+    final backups = await _backupService.getBackups();
+    
+    setState(() {
+      _lastBackupDate = date;
+      _availableBackups = backups.map((file) {
+        final stat = file.statSync();
+        return {
+          'path': file.path,
+          'name': file.path.split('/').last,
+          'date': stat.modified,
+          'size': stat.size,
+        };
+      }).toList()
+        ..sort((a, b) => b['date'].compareTo(a['date']));
+    });
   }
 
   @override
@@ -247,13 +271,13 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
               ),
               const SizedBox(height: 24),
 
-              // Opciones de exportación
+              // Opciones de exportación PDF
               _buildExportOption(
                 'Reporte Completo',
                 'Exporta todos los acopios con estadísticas detalladas',
                 Icons.picture_as_pdf,
                 Colors.red,
-                () => _exportFullReport(),
+                () => _exportFullReport(purchaseVM.purchases, statsVM.stats!),
               ),
               const SizedBox(height: 12),
               _buildExportOption(
@@ -261,7 +285,7 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
                 'Solo gráficas y estadísticas clave',
                 Icons.bar_chart,
                 Colors.blue,
-                () => _exportStatisticsReport(),
+                () => _exportStatisticsReport(statsVM.stats!),
               ),
               const SizedBox(height: 12),
               _buildExportOption(
@@ -269,7 +293,7 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
                 'Lista completa de todos los acopios',
                 Icons.list,
                 Colors.green,
-                () => _exportPurchasesList(),
+                () => _exportPurchasesList(purchaseVM.purchases),
               ),
 
               const SizedBox(height: 24),
@@ -280,39 +304,90 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
-              ListTile(
-                leading: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
+              
+              // Crear respaldo
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(Icons.backup, color: Colors.amber),
+                        ),
+                        title: const Text('Crear Nuevo Respaldo'),
+                        subtitle: Text('Último respaldo: $_lastBackupDate'),
+                        trailing: ElevatedButton(
+                          onPressed: _createBackup,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.amber,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('Respaldar'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: _cleanupOldBackups,
+                        icon: const Icon(Icons.clean_hands),
+                        label: const Text('Limpiar respaldos antiguos'),
+                      ),
+                    ],
                   ),
-                  child: const Icon(Icons.backup, color: Colors.amber),
-                ),
-                title: const Text('Crear Respaldo'),
-                subtitle: Text('Último respaldo: ${_getLastBackupDate()}'),
-                trailing: ElevatedButton(
-                  onPressed: _createBackup,
-                  child: const Text('Respaldar'),
                 ),
               ),
-              const Divider(),
-              ListTile(
-                leading: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
+
+              const SizedBox(height: 16),
+
+              // Lista de respaldos disponibles
+              if (_availableBackups.isNotEmpty)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Respaldos Disponibles',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 12),
+                        ..._availableBackups.map((backup) => ListTile(
+                          leading: const Icon(Icons.backup, color: Colors.green),
+                          title: Text(backup['name']),
+                          subtitle: Text(
+                            '${dateFormat.format(backup['date'])} • ${_formatFileSize(backup['size'])}',
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.restore, color: Colors.blue),
+                                onPressed: () => _restoreBackup(backup['path']),
+                                tooltip: 'Restaurar',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.share, color: Colors.green),
+                                onPressed: () => _shareBackup(backup['path']),
+                                tooltip: 'Compartir',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _deleteBackup(backup['path']),
+                                tooltip: 'Eliminar',
+                              ),
+                            ],
+                          ),
+                        )).toList(),
+                      ],
+                    ),
                   ),
-                  child: const Icon(Icons.restore, color: Colors.green),
                 ),
-                title: const Text('Restaurar Datos'),
-                subtitle: const Text('Recuperar desde un respaldo anterior'),
-                trailing: OutlinedButton(
-                  onPressed: _restoreBackup,
-                  child: const Text('Restaurar'),
-                ),
-              ),
             ],
           ),
         );
@@ -476,7 +551,9 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
                           lastDate: DateTime.now().add(const Duration(days: 365)),
                         );
                         if (picked != null) {
-                          startDate = picked;
+                          setState(() {
+                            startDate = picked;
+                          });
                         }
                       },
                       child: InputDecorator(
@@ -499,7 +576,9 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
                           lastDate: startDate.add(const Duration(days: 365)),
                         );
                         if (picked != null) {
-                          endDate = picked;
+                          setState(() {
+                            endDate = picked;
+                          });
                         }
                       },
                       child: InputDecorator(
@@ -696,6 +775,15 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
       );
       
       await goalVM.updateGoal(updatedGoal);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Meta desactivada'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 
@@ -706,6 +794,7 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
     await Future.wait([
       purchaseVM.loadPurchases(),
       goalVM.loadGoals(),
+      _loadBackupInfo(),
     ]);
     
     if (mounted) {
@@ -718,78 +807,260 @@ class _AdminViewState extends State<AdminView> with SingleTickerProviderStateMix
     }
   }
 
-  Future<void> _exportFullReport() async {
+  // Exportar reporte completo PDF
+  Future<void> _exportFullReport(List<Purchase> purchases, PurchaseStats stats) async {
     try {
-      final pdf = pw.Document();
-      final purchaseVM = context.read<PurchaseViewModel>();
-      final statsVM = context.read<StatisticsViewModel>();
-      
-      // Aquí construirías el PDF con todos los datos
-      // Por ahora mostraremos un mensaje
-      
-      await Printing.layoutPdf(
-        onLayout: (format) async => pdf.save(),
-      );
+      await _pdfService.exportFullReport(context, purchases, stats);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Reporte generado exitosamente'),
+            content: Text('Reporte PDF generado exitosamente'),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error al generar reporte: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      _showErrorDialog('Error al generar PDF', e.toString());
     }
   }
 
-  Future<void> _exportStatisticsReport() async {
-    // Implementar exportación de estadísticas
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Funcionalidad en desarrollo'),
-        backgroundColor: Colors.orange,
-      ),
-    );
+  // Exportar solo estadísticas PDF
+  Future<void> _exportStatisticsReport(PurchaseStats stats) async {
+    try {
+      await _pdfService.exportStatisticsReport(context, stats);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Estadísticas PDF generadas exitosamente'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      _showErrorDialog('Error al generar PDF', e.toString());
+    }
   }
 
-  Future<void> _exportPurchasesList() async {
-    // Implementar exportación de lista de acopios
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Funcionalidad en desarrollo'),
-        backgroundColor: Colors.orange,
-      ),
-    );
+  // Exportar lista de acopios PDF
+  Future<void> _exportPurchasesList(List<Purchase> purchases) async {
+    try {
+      await _pdfService.exportPurchasesList(context, purchases);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Listado PDF generado exitosamente'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      _showErrorDialog('Error al generar PDF', e.toString());
+    }
   }
 
-  String _getLastBackupDate() {
-    // Aquí implementarías la lógica para obtener la fecha del último respaldo
-    return 'No hay respaldos';
-  }
-
+  // Crear backup
   Future<void> _createBackup() async {
-    // Implementar creación de backup
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Respaldo creado exitosamente'),
-        backgroundColor: Colors.green,
-      ),
-    );
+    try {
+      final path = await _backupService.createBackup();
+      
+      if (path != null) {
+        await _backupService.cleanupOldBackups();
+        await _loadBackupInfo();
+        
+        if (mounted) {
+          // Preguntar si quiere compartir el backup
+          final share = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Respaldo creado'),
+              content: const Text('¿Deseas compartir el archivo de respaldo?'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('No'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Sí, compartir'),
+                ),
+              ],
+            ),
+          );
+
+          if (share == true) {
+            await _backupService.shareBackup(path);
+          }
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Respaldo creado exitosamente'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        throw Exception('No se pudo crear el respaldo');
+      }
+    } catch (e) {
+      _showErrorDialog('Error al crear respaldo', e.toString());
+    }
   }
 
-  Future<void> _restoreBackup() async {
-    // Implementar restauración de backup
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Funcionalidad en desarrollo'),
-        backgroundColor: Colors.orange,
+  // Restaurar backup
+  Future<void> _restoreBackup(String path) async {
+    try {
+      // Confirmar restauración
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restaurar respaldo'),
+          content: const Text(
+            '¿Estás seguro? Esta acción reemplazará todos los datos actuales. '
+            'Se recomienda hacer un backup antes de continuar.'
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Restaurar'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+
+      // Mostrar loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+
+      // Restaurar backup
+      final success = await _backupService.restoreBackup(path);
+
+      // Cerrar loading
+      Navigator.pop(context);
+
+      if (success) {
+        // Recargar datos
+        await _refreshData();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Datos restaurados exitosamente'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        throw Exception('Error al restaurar los datos');
+      }
+    } catch (e) {
+      _showErrorDialog('Error al restaurar', e.toString());
+    }
+  }
+
+  // Compartir backup
+  Future<void> _shareBackup(String path) async {
+    try {
+      await _backupService.shareBackup(path);
+    } catch (e) {
+      _showErrorDialog('Error al compartir', e.toString());
+    }
+  }
+
+  // Eliminar backup
+  Future<void> _deleteBackup(String path) async {
+    try {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Eliminar respaldo'),
+          content: const Text('¿Estás seguro de eliminar este respaldo?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm == true) {
+        final file = File(path);
+        await file.delete();
+        await _loadBackupInfo();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Respaldo eliminado'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      _showErrorDialog('Error al eliminar', e.toString());
+    }
+  }
+
+  // Limpiar backups antiguos
+  Future<void> _cleanupOldBackups() async {
+    try {
+      await _backupService.cleanupOldBackups();
+      await _loadBackupInfo();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Respaldos antiguos eliminados'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      _showErrorDialog('Error al limpiar', e.toString());
+    }
+  }
+
+  // Formatear tamaño de archivo
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  // Mostrar diálogo de error
+  void _showErrorDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Aceptar'),
+          ),
+        ],
       ),
     );
   }

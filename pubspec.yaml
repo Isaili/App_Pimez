@@ -15,6 +15,10 @@ dependencies:
   fl_chart: ^0.64.0
   pdf: ^3.10.7
   printing: ^5.11.1
+  share_plus: ^7.2.0  
+  path_provider: ^2.1.1 
+  flutter_local_notifications: ^16.1.0
+  animations: ^2.0.8
 
 dev_dependencies:
   flutter_test:

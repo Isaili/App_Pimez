@@ -4,6 +4,10 @@ import 'viewmodels/purchase_viewmodel.dart';
 import 'viewmodels/statistics_viewmodel.dart';
 import 'viewmodels/goal_viewmodel.dart';
 import 'views/home_view.dart';
+import 'views/purchase_form_view.dart';
+import 'views/purchases_list_view.dart';
+import 'views/statistics_view.dart';
+import 'views/admin_view.dart';
 
 void main() {
   runApp(const MyApp());
@@ -33,8 +37,26 @@ class MyApp extends StatelessWidget {
         theme: ThemeData(
           primarySwatch: Colors.green,
           useMaterial3: true,
+          fontFamily: 'Roboto',
         ),
-        home: const HomeView(),
+        initialRoute: '/',
+        routes: {
+          '/': (context) => const HomeView(),
+          '/purchase-form': (context) => const PurchaseFormView(),
+          '/purchases-list': (context) => const PurchasesListView(),
+          '/statistics': (context) => const StatisticsView(),
+          '/admin': (context) => const AdminView(),
+        },
+        onGenerateRoute: (settings) {
+          if (settings.name == '/purchase-form' && settings.arguments != null) {
+            return MaterialPageRoute(
+              builder: (context) => PurchaseFormView(
+                purchase: settings.arguments as Purchase?,
+              ),
+            );
+          }
+          return null;
+        },
         debugShowCheckedModeBanner: false,
       ),
     );
